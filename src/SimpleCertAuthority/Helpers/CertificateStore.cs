@@ -35,11 +35,15 @@ public static class CertificateStore
     private static readonly List<string> RevokedCertificates = [];
 
     /// <summary>
+    /// The key size.
+    /// </summary>
+    private const int KeySize = 4096;
+
+    /// <summary>
     /// Creates and saves the RSA key pair.
     /// </summary>
-    /// <param name="keySize">The key size, defaults to 4096.</param>
     /// <exception cref="InvalidOperationException">Thrown if the RSA key was already generated.</exception>
-    public static async Task CreateAndSaveRsaKeyPair(int keySize = 4096)
+    public static async Task CreateAndSaveRsaKeyPair()
     {
         // Jump out if the key pair was already created before.
         if (RsaKeyPair is not null)
@@ -48,7 +52,7 @@ public static class CertificateStore
         }
 
         // Create a new RSA key pair.
-        using RSA rsa = RSA.Create(keySize);
+        var rsa = RSA.Create(KeySize);
 
         // Save private key in PEM format.
         var privateKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PrivateKeyFileName);
@@ -78,9 +82,11 @@ public static class CertificateStore
             return false;
         }
 
+        // Create a new RSA key pair.
+        var rsa = RSA.Create(KeySize);
+
         // Load the RSA private key.
         var privateKey = await File.ReadAllBytesAsync(privateKeyFilePath);
-        var rsa = RSA.Create();
         rsa.ImportRSAPrivateKey(privateKey, out _);
 
         // Load the RSA public key.
