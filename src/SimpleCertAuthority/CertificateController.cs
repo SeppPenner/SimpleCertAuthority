@@ -326,30 +326,29 @@ public sealed class CertificateController : ControllerBase
     /// <returns>The file result.</returns>
     private ActionResult ReturnZipCertificatesFile(List<X509Certificate2> certificates)
     {
-        using var memoryStream = new MemoryStream();
-        using var archive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true);
-
-        // Iterate all certificates.
-        foreach (var certificate in certificates)
+        var memoryStream = new MemoryStream();
+        using (var archive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
         {
-            // Get the file name.
-            var fileName = $"{certificate.Subject.Replace("CN=", "").Replace(",", "")}-{certificate.Thumbprint}.cer";
+            // Iterate all certificates.
+            foreach (var certificate in certificates)
+            {
+                // Get the file name.
+                var fileName = $"{certificate.Subject.Replace("CN=", string.Empty).Replace(",", string.Empty).Replace("\"", string.Empty)}-{certificate.Thumbprint}.cer";
 
-            // Add a new entry to the ZIP file.
-            var entry = archive.CreateEntry(fileName);
+                // Add a new entry to the ZIP file.
+                var entry = archive.CreateEntry(fileName);
 
-            // Open the entry stream.
-            using var entryStream = entry.Open();
-
-            // Export the certificate as bytes.
-            var certBytes = certificate.Export(X509ContentType.Cert);
-            entryStream.Write(certBytes, 0, certBytes.Length);
+                // Open the entry stream and write certificate data.
+                using var entryStream = entry.Open();
+                var certBytes = certificate.Export(X509ContentType.Cert);
+                entryStream.Write(certBytes, 0, certBytes.Length);
+            }
         }
 
-        // Reset the memory stream.
+        // Reset the memory stream position.
         memoryStream.Position = 0;
 
-        // Return the ZIP file.
-        return this.File(memoryStream.ToArray(), ContentTypes.ApplicationZip, NameConstants.CertificatesFileName);
+        // Return the ZIP file and ensure the memoryStream is disposed after the response is sent.
+        return this.File(memoryStream, ContentTypes.ApplicationZip, NameConstants.CertificatesFileName);
     }
 }
