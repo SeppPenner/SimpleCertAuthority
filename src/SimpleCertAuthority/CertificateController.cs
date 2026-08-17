@@ -200,8 +200,7 @@ public sealed class CertificateController : ControllerBase
                 dtoCreateCertificate.SubjectName,
                 dtoCreateCertificate.ValidFrom,
                 dtoCreateCertificate.ValidTo,
-                dtoCreateCertificate.SanDomains,
-                dtoCreateCertificate.CertificatePassword);
+                dtoCreateCertificate.SanDomains);
 
             // Get the certificate bytes and return a file result.
             var certificateBytes = certificate.Export(X509ContentType.Pfx, dtoCreateCertificate.CertificatePassword);
@@ -233,7 +232,7 @@ public sealed class CertificateController : ControllerBase
     {
         try
         {
-            var certificate = new X509Certificate2(certificateBytes);
+            var certificate = CertificateHelper.LoadFromBytes(certificateBytes);
             await CertificateStore.AddRevokedCertificate(certificate.SerialNumber);
             return this.Ok("Certificate revoked.");
         }
@@ -265,7 +264,7 @@ public sealed class CertificateController : ControllerBase
     {
         try
         {
-            var certificate = new X509Certificate2(certificateBytes);
+            var certificate = CertificateHelper.LoadFromBytes(certificateBytes);
             var isValid = CertificateStore.ValidateCertificate(certificate, out var error);
 
             if (isValid)
@@ -302,12 +301,11 @@ public sealed class CertificateController : ControllerBase
         try
         {
             // Create a new certificate.
-            var certificate = new X509Certificate2(dtoRenewCertificate.CertificateBytes);
+            var certificate = CertificateHelper.LoadFromBytes(dtoRenewCertificate.CertificateBytes);
             var newCertificate = CertificateStore.RenewCertificate(
                 certificate,
                 dtoRenewCertificate.ValidFrom,
-                dtoRenewCertificate.ValidTo,
-                dtoRenewCertificate.CertificatePassword);
+                dtoRenewCertificate.ValidTo);
 
             // Get the new certificate bytes and return a file result.
             var certificateBytes = newCertificate.Export(X509ContentType.Pfx, dtoRenewCertificate.CertificatePassword);

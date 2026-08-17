@@ -40,6 +40,21 @@ public static class NameConstants
     public const string RevokedCertificatesFileName = "revoked_certificates.json";
 
     /// <summary>
+    /// The search pattern of the root certificate files.
+    /// </summary>
+    public const string RootCertificateFilePattern = "root_ca_*.pfx";
+
+    /// <summary>
+    /// The search pattern of the sub CA certificate files.
+    /// </summary>
+    public const string SubCaCertificateFilePattern = "sub_ca_*.pfx";
+
+    /// <summary>
+    /// The search pattern of the revoked certificate files.
+    /// </summary>
+    public const string RevokedCertificatesFilePattern = "*.json";
+
+    /// <summary>
     /// The certificate file name.
     /// </summary>
     public const string CertificateFileName = "certificate.pfx";

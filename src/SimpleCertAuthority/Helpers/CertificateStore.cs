@@ -15,8 +15,12 @@ namespace SimpleCertAuthority.Helpers;
 public static class CertificateStore
 {
     /// <summary>
-    /// The RSA key pair.
+    /// The RSA key pair of the root certification authority (CA).
     /// </summary>
+    /// <remarks>
+    /// This key pair signs the root certificates only. Sub CA certificates and issued certificates get
+    /// their own key pair, so that the root key never leaves the service.
+    /// </remarks>
     private static RSA? RsaKeyPair;
 
     /// <summary>
@@ -40,6 +44,22 @@ public static class CertificateStore
     private const int KeySize = 4096;
 
     /// <summary>
+    /// The serial number size in bytes.
+    /// </summary>
+    private const int SerialNumberSize = 16;
+
+    /// <summary>
+    /// The key storage flags used to load a PKCS#12 file.
+    /// </summary>
+    /// <remarks>
+    /// The keys are needed in memory only, for signing and for exporting. Persisting them would fill
+    /// the key store of the host with one key per service start. Mind that <see cref="X509KeyStorageFlags.EphemeralKeySet"/>
+    /// is not supported on macOS.
+    /// </remarks>
+    private const X509KeyStorageFlags KeyStorageFlags =
+        X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet;
+
+    /// <summary>
     /// Creates and saves the RSA key pair.
     /// </summary>
     /// <exception cref="InvalidOperationException">Thrown if the RSA key was already generated.</exception>
@@ -54,12 +74,14 @@ public static class CertificateStore
         // Create a new RSA key pair.
         var rsa = RSA.Create(KeySize);
 
-        // Save private key in PEM format.
+        // Save the private key as a PKCS#1 structure. Mind that these are DER bytes, not PEM text,
+        // although the file name says so.
         var privateKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PrivateKeyFileName);
         var privateKey = rsa.ExportRSAPrivateKey();
         await File.WriteAllBytesAsync(privateKeyFilePath, privateKey);
 
-        // Save public key in PEM format.
+        // Save the public key as a PKCS#1 structure. It is written for inspection only, the private key
+        // file already contains the public parameters.
         var publicKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PublicKeyFileName);
         var publicKey = rsa.ExportRSAPublicKey();
         await File.WriteAllBytesAsync(publicKeyFilePath, publicKey);
@@ -85,13 +107,12 @@ public static class CertificateStore
         // Create a new RSA key pair.
         var rsa = RSA.Create(KeySize);
 
-        // Load the RSA private key.
+        // Load the RSA private key. The public key file must not be imported afterwards:
+        // ImportRSAPublicKey replaces the key material of the instance, which would leave a key pair
+        // without a private key behind and break every signing operation. The private key already
+        // contains the public parameters.
         var privateKey = await File.ReadAllBytesAsync(privateKeyFilePath);
         rsa.ImportRSAPrivateKey(privateKey, out _);
-
-        // Load the RSA public key.
-        var publicKey = await File.ReadAllBytesAsync(publicKeyFilePath);
-        rsa.ImportRSAPublicKey(publicKey, out _);
 
         // Save the RSA key pair.
         RsaKeyPair = rsa;
@@ -116,7 +137,7 @@ public static class CertificateStore
 
         // Create a certificate request for the root certificate.
         var request = new CertificateRequest(
-            $"CN={subjectName}",
+            $"CN={GetCommonName(subjectName)}",
             RsaKeyPair,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
@@ -131,7 +152,8 @@ public static class CertificateStore
         // Add the subject key identifier (Helpful for chain tracking).
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
-        // Create a self-signed root certificate (e.g. valid for 5 years).
+        // Create a self-signed root certificate (e.g. valid for 5 years). The certificate carries the
+        // private key of the RSA key pair, so it can be exported and used for signing right away.
         var rootCert = request.CreateSelfSigned(
             DateTimeOffset.Now,
             DateTimeOffset.Now.AddYears(5));
@@ -154,11 +176,12 @@ public static class CertificateStore
     public static async Task<int> LoadRootCertificates(string rootCaPassword)
     {
         // Iterate over all root certificates.
-        foreach (var file in Directory.GetFiles(DirectoryNames.RootCertificates))
+        foreach (var file in Directory.GetFiles(DirectoryNames.RootCertificates, NameConstants.RootCertificateFilePattern))
         {
-            // Load the certificate from the file.
+            // Load the certificate from the file. The private key is needed to sign sub CA certificates
+            // and is kept in memory only, so that nothing ends up in a platform key store.
             var certBytes = await File.ReadAllBytesAsync(file);
-            var cert = new X509Certificate2(certBytes, rootCaPassword, X509KeyStorageFlags.PersistKeySet);
+            var cert = X509CertificateLoader.LoadPkcs12(certBytes, rootCaPassword, KeyStorageFlags);
             RootCertificates.Add(cert);
         }
 
@@ -180,16 +203,10 @@ public static class CertificateStore
     /// <param name="subCaPassword">The sub CA password.</param>
     /// <param name="subjectName">The subject name.</param>
     /// <exception cref="InvalidOperationException">
-    /// Thrown if the RSA key was not yet generated orthe root certificate is missing.
+    /// Thrown if the root certificate is missing or cannot sign.
     /// </exception>
     public static async Task CreateAndSaveSubCaCertificate(string subCaPassword, string subjectName)
     {
-        // Jump out if the key pair was not yet created.
-        if (RsaKeyPair is null)
-        {
-            throw new InvalidOperationException("RSA key was not yet generated. Please generate it first.");
-        }
-
         // Jump out if the root certificate is missing.
         if (RootCertificates.Count == 0)
         {
@@ -201,13 +218,19 @@ public static class CertificateStore
             .OrderByDescending(cert => cert.NotAfter)
             .FirstOrDefault() ?? throw new InvalidOperationException("Root certificate is missing. Please create it first.");
 
-        // Get the root certificate's private key.
-        using var rootPrivateKey = rootCert?.GetRSAPrivateKey();
+        // Jump out if the root certificate cannot sign.
+        if (!rootCert.HasPrivateKey)
+        {
+            throw new InvalidOperationException("The root certificate private key is missing.");
+        }
+
+        // Create an own key pair for the sub CA certificate, so that the root key stays with the root.
+        using var subCaKeyPair = RSA.Create(KeySize);
 
         // Get the certificate request for the sub CA certificate.
         var request = new CertificateRequest(
-            $"CN={subjectName}",
-            RsaKeyPair,
+            $"CN={GetCommonName(subjectName)}",
+            subCaKeyPair,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
 
@@ -221,21 +244,29 @@ public static class CertificateStore
         // Add the subject key identifier (Helpful for chain tracking).
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
+        // Add the authority key identifier of the root certificate. Without it the chain lookup in
+        // FindMatchingCertificates cannot get from the sub CA certificate to its root certificate.
+        AddAuthorityKeyIdentifier(rootCert, request);
+
         // Sign the sub CA certificate with the root certificate.
         var intermediateCert = request.Create(
-            rootCert!,
+            rootCert,
             DateTimeOffset.Now,
             DateTimeOffset.Now.AddYears(3),
-            new byte[] { 1, 2, 3, 4 });
+            CreateSerialNumber());
 
-        // Export certificate to PFX format.
-        var certBytes = intermediateCert.Export(X509ContentType.Pfx, subCaPassword);
+        // Attach the private key, because request.Create returns the public part only.
+        using var intermediateCertWithKey = intermediateCert.CopyWithPrivateKey(subCaKeyPair);
+
+        // Export certificate to PFX format with the private key.
+        var certBytes = intermediateCertWithKey.Export(X509ContentType.Pfx, subCaPassword);
         var certificateName = string.Format(NameConstants.SubCaCertificateFileName, SubCaCertificates.Count + 1);
         var subCaCertificatePath = Path.Combine(DirectoryNames.SubCaCertificates, certificateName);
         await File.WriteAllBytesAsync(subCaCertificatePath, certBytes);
 
-        // Save sub CA certificate.
-        SubCaCertificates.Add(intermediateCert);
+        // Save sub CA certificate. The exported bytes are loaded again, so that the stored certificate
+        // does not depend on the key pair and the certificate disposed at the end of this method.
+        SubCaCertificates.Add(X509CertificateLoader.LoadPkcs12(certBytes, subCaPassword, KeyStorageFlags));
     }
 
     /// <summary>
@@ -246,11 +277,11 @@ public static class CertificateStore
     public static async Task<int> LoadSubCaCertificates(string subCaPassword)
     {
         // Iterate over all sub CA certificates.
-        foreach (var file in Directory.GetFiles(DirectoryNames.SubCaCertificates))
+        foreach (var file in Directory.GetFiles(DirectoryNames.SubCaCertificates, NameConstants.SubCaCertificateFilePattern))
         {
-            // Load the certificate from the file.
+            // Load the certificate from the file. The private key is needed to sign issued certificates.
             var certBytes = await File.ReadAllBytesAsync(file);
-            var cert = new X509Certificate2(certBytes, subCaPassword, X509KeyStorageFlags.PersistKeySet);
+            var cert = X509CertificateLoader.LoadPkcs12(certBytes, subCaPassword, KeyStorageFlags);
             SubCaCertificates.Add(cert);
         }
 
@@ -282,26 +313,18 @@ public static class CertificateStore
     /// <param name="validFrom">The valid from date.</param>
     /// <param name="validTo">The valid to date.</param>
     /// <param name="sanDomains">The SAN domains.</param>
-    /// <param name="certificatePassword">The certificate password.</param>
-    /// <returns>The certificate.</returns>
+    /// <returns>The certificate including its private key.</returns>
     /// <exception cref="InvalidOperationException">Thrown if any input parameters are invalid.</exception>
     public static X509Certificate2 CreateCertificate(
         string subjectName,
         DateTimeOffset validFrom,
         DateTimeOffset validTo,
-        string[] sanDomains,
-        string? certificatePassword = null)
+        string[] sanDomains)
     {
         // Jump out if the dates don't fit.
         if (validFrom >= validTo)
         {
             throw new InvalidOperationException("The valid from date must be before the valid to date.");
-        }
-
-        // Jump out if the key pair was not yet created.
-        if (RsaKeyPair is null)
-        {
-            throw new InvalidOperationException("RSA key was not yet generated. Please generate it first.");
         }
 
         // Jump out if the root certificate is missing.
@@ -316,23 +339,19 @@ public static class CertificateStore
             throw new InvalidOperationException("Sub CA certificate is missing. Please create it first.");
         }
 
-        // Check and adjust the subject name.
-        subjectName = subjectName.Trim();
-
-        if (subjectName.StartsWith("CN="))
-        {
-            subjectName = subjectName.Replace("CN=", string.Empty);
-        }
-
         // Select the sub CA certificate with the latest expiration date.
         var subCaCertificate = SubCaCertificates
             .OrderByDescending(cert => cert.NotAfter)
             .FirstOrDefault() ?? throw new InvalidOperationException("Sub CA certificate is missing. Please create it first.");
 
+        // Create an own key pair for the certificate. It is handed out to the caller inside the PFX file,
+        // so it must not be the key pair of one of the certification authorities.
+        using var keyPair = RSA.Create(KeySize);
+
         // Get the certificate request for the certificate.
         var request = new CertificateRequest(
-                $"CN={subjectName}",
-                RsaKeyPair,
+                $"CN={GetCommonName(subjectName)}",
+                keyPair,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
 
@@ -364,20 +383,7 @@ public static class CertificateStore
         }
 
         // Add the authority key identifier from the sub CA certificate.
-        if (subCaCertificate.Extensions[OidConstants.SubjectKeyIdentifier] is X509SubjectKeyIdentifierExtension subjectKeyIdentifier)
-        {
-            var rawData = new byte[subjectKeyIdentifier.RawData.Length + 4];
-            // Format: 30 xx 80 xx [SKI bytes]
-            rawData[0] = 0x30; // SEQUENCE
-            rawData[1] = (byte)(subjectKeyIdentifier.RawData.Length + 2);
-            rawData[2] = 0x80; // Context Specific 0
-            rawData[3] = (byte)(subjectKeyIdentifier.RawData.Length);
-            Buffer.BlockCopy(subjectKeyIdentifier.RawData, 2, rawData, 4, subjectKeyIdentifier.RawData.Length - 2);
-
-            // Add the authority key identifier extension.
-            var authorityKeyIdentifierExtension = new X509Extension(OidConstants.AuthorityKeyIdentifier, rawData, false);
-            request.CertificateExtensions.Add(authorityKeyIdentifierExtension);
-        }
+        AddAuthorityKeyIdentifier(subCaCertificate, request);
 
         // Set some basic constraints (non-CA certificate).
         var basicConstraints = new X509BasicConstraintsExtension(
@@ -390,23 +396,17 @@ public static class CertificateStore
         // Create the certificate.
         using var subCaPrivateKey = subCaCertificate.GetRSAPrivateKey() ?? throw new InvalidOperationException("The sub CA private key is missing.");
 
-        // Fill the serial number.
-        var serialNumber = new byte[16];
-        RandomNumberGenerator.Fill(serialNumber);
-
         // Create the new certificate.
         var certificate = request.Create(
             subCaCertificate.SubjectName,
             X509SignatureGenerator.CreateForRSA(subCaPrivateKey, RSASignaturePadding.Pkcs1),
             validFrom,
             validTo,
-            serialNumber);
+            CreateSerialNumber());
 
-        // Export the certificate.
-        return new X509Certificate2(
-            certificate.Export(X509ContentType.Pfx),
-            certificatePassword,
-            X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+        // Attach the private key and detach the certificate from the key pair disposed at the end of
+        // this method, so that the caller can export it including the private key.
+        return AttachPrivateKey(certificate, keyPair);
     }
 
     /// <summary>
@@ -494,25 +494,21 @@ public static class CertificateStore
     /// <param name="certificateToRenew">The certificate to renew.</param>
     /// <param name="validFrom">The valid from date.</param>
     /// <param name="validTo">The valid to date.</param>
-    /// <param name="certificatePassword">The certificate password.</param>
-    /// <returns>The new certificate.</returns>
+    /// <returns>The new certificate including its private key.</returns>
     /// <exception cref="InvalidOperationException">Thrown if any input parameters are invalid.</exception>
+    /// <remarks>
+    /// The renewed certificate gets a new key pair, the caller cannot keep the old one because only the
+    /// public part of the certificate to renew is handed over.
+    /// </remarks>
     public static X509Certificate2 RenewCertificate(
         X509Certificate2 certificateToRenew,
         DateTimeOffset validFrom,
-        DateTimeOffset validTo,
-        string? certificatePassword = null)
+        DateTimeOffset validTo)
     {
         // Jump out if the dates don't fit.
         if (validFrom >= validTo)
         {
             throw new InvalidOperationException("The valid from date must be before the valid to date.");
-        }
-
-        // Jump out if the key pair was not yet created.
-        if (RsaKeyPair is null)
-        {
-            throw new InvalidOperationException("RSA key was not yet generated. Please generate it first.");
         }
 
         // Jump out if the root certificate is missing.
@@ -541,10 +537,13 @@ public static class CertificateStore
             throw new InvalidOperationException(matchingCertificates.ErrorMessage);
         }
 
+        // Create an own key pair for the renewed certificate.
+        using var keyPair = RSA.Create(KeySize);
+
         // Get the certificate request for the certificate.
         var request = new CertificateRequest(
             certificateToRenew.Subject,
-            RsaKeyPair,
+            keyPair,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
 
@@ -563,23 +562,18 @@ public static class CertificateStore
         // Create the certificate.
         using var subCaPrivateKey = matchingCertificates.SubCaCertificate!.GetRSAPrivateKey() ?? throw new InvalidOperationException("The sub CA private key is missing.");
 
-        // Fill the serial number.
-        var serialNumber = new byte[16];
-        RandomNumberGenerator.Fill(serialNumber);
-
-        // Create the new certificate.
+        // Create the new certificate. The first argument is the issuer name, so it has to be the subject
+        // of the signing sub CA certificate, not the subject of the certificate being renewed.
         var certificate = request.Create(
-            certificateToRenew.SubjectName,
+            matchingCertificates.SubCaCertificate!.SubjectName,
             X509SignatureGenerator.CreateForRSA(subCaPrivateKey, RSASignaturePadding.Pkcs1),
             validFrom,
             validTo,
-            serialNumber);
+            CreateSerialNumber());
 
-        // Export the certificate.
-        return new X509Certificate2(
-            certificate.Export(X509ContentType.Pfx),
-            certificatePassword,
-            X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+        // Attach the private key and detach the certificate from the key pair disposed at the end of
+        // this method, so that the caller can export it including the private key.
+        return AttachPrivateKey(certificate, keyPair);
     }
 
     /// <summary>
@@ -588,7 +582,7 @@ public static class CertificateStore
     public static async Task LoadRevokedCertificates()
     {
         // Iterate over all revoked certificates.
-        foreach (var file in Directory.GetFiles(DirectoryNames.RevokedCertificates))
+        foreach (var file in Directory.GetFiles(DirectoryNames.RevokedCertificates, NameConstants.RevokedCertificatesFilePattern))
         {
             // Load the certificates from the file.
             var fileContent = await File.ReadAllBytesAsync(file);
@@ -722,26 +716,70 @@ public static class CertificateStore
     }
 
     /// <summary>
-    /// Adds the authority key identifier.
+    /// Adds the authority key identifier of the issuing certificate to a certificate request.
     /// </summary>
-    /// <param name="subCaCertificate">The sub CA certificate.</param>
+    /// <param name="issuerCertificate">The issuing certificate.</param>
     /// <param name="certificateRequest">The certificate request.</param>
-    private static void AddAuthorityKeyIdentifier(X509Certificate2 subCaCertificate, CertificateRequest certificateRequest)
+    /// <remarks>
+    /// The extension is built by the framework. Encoding it by hand is what produced the malformed
+    /// identifiers of the earlier versions, which no chain lookup could match.
+    /// </remarks>
+    private static void AddAuthorityKeyIdentifier(X509Certificate2 issuerCertificate, CertificateRequest certificateRequest)
     {
-        if (subCaCertificate.Extensions[OidConstants.SubjectKeyIdentifier] is X509SubjectKeyIdentifierExtension subCaSkiExt)
+        if (issuerCertificate.Extensions[OidConstants.SubjectKeyIdentifier] is X509SubjectKeyIdentifierExtension issuerSubjectKeyIdentifier)
         {
-            // Get the raw data.
-            var rawData = new byte[subCaSkiExt.RawData.Length + 4];
-            rawData[0] = 0x30; // Sequence.
-            rawData[1] = (byte)(subCaSkiExt.RawData.Length + 2);
-            rawData[2] = 0x80; // Context specific 0.
-            rawData[3] = (byte)(subCaSkiExt.RawData.Length);
-            Buffer.BlockCopy(subCaSkiExt.RawData, 2, rawData, 4, subCaSkiExt.RawData.Length - 2);
-
-            // Adds the extension.
-            var akiExtension = new X509Extension(OidConstants.AuthorityKeyIdentifier, rawData, false);
-            certificateRequest.CertificateExtensions.Add(akiExtension);
+            certificateRequest.CertificateExtensions.Add(
+                X509AuthorityKeyIdentifierExtension.CreateFromSubjectKeyIdentifier(issuerSubjectKeyIdentifier));
         }
+    }
+
+    /// <summary>
+    /// Gets the common name for a subject name.
+    /// </summary>
+    /// <param name="subjectName">The subject name.</param>
+    /// <returns>The common name without a <c>CN=</c> prefix.</returns>
+    /// <remarks>
+    /// The configured subjects are written as <c>CN=Something</c>, while the callers add the prefix
+    /// themselves. Without this the subject of the root certificate reads <c>CN=CN=Something</c>.
+    /// </remarks>
+    private static string GetCommonName(string subjectName)
+    {
+        var commonName = subjectName.Trim();
+
+        if (commonName.StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
+        {
+            commonName = commonName[3..];
+        }
+
+        return commonName.Trim();
+    }
+
+    /// <summary>
+    /// Creates a random serial number.
+    /// </summary>
+    /// <returns>The serial number.</returns>
+    private static byte[] CreateSerialNumber()
+    {
+        var serialNumber = new byte[SerialNumberSize];
+        RandomNumberGenerator.Fill(serialNumber);
+        return serialNumber;
+    }
+
+    /// <summary>
+    /// Attaches a private key to a certificate.
+    /// </summary>
+    /// <param name="certificate">The certificate without a private key.</param>
+    /// <param name="keyPair">The key pair belonging to the certificate.</param>
+    /// <returns>The certificate including its private key.</returns>
+    /// <remarks>
+    /// <see cref="CertificateRequest.Create(X509Certificate2, DateTimeOffset, DateTimeOffset, byte[])"/>
+    /// and its overloads return the public part only. The result is written to a PKCS#12 structure and
+    /// read back, so that the returned certificate no longer references <paramref name="keyPair"/>.
+    /// </remarks>
+    private static X509Certificate2 AttachPrivateKey(X509Certificate2 certificate, RSA keyPair)
+    {
+        using var certificateWithKey = certificate.CopyWithPrivateKey(keyPair);
+        return X509CertificateLoader.LoadPkcs12(certificateWithKey.Export(X509ContentType.Pkcs12), null, KeyStorageFlags);
     }
 
     /// <summary>
@@ -828,28 +866,14 @@ public static class CertificateStore
         // Get and return the authority key identifier.
         try
         {
-            var rawData = extension.RawData;
-
-            // Search: Typical after the first 0x80 tag.
-            for (var i = 0; i < rawData.Length - 2; i++)
-            {
-                if (rawData[i] == 0x80)
-                {
-                    var length = rawData[i + 1];
-
-                    if (length > 0 && i + 2 + length <= rawData.Length)
-                    {
-                        return BitConverter.ToString(rawData, i + 2, length).Replace("-", "");
-                    }
-                }
-            }
+            var authorityKeyIdentifier = new X509AuthorityKeyIdentifierExtension(extension.RawData, extension.Critical);
+            var keyIdentifier = authorityKeyIdentifier.KeyIdentifier;
+            return keyIdentifier is null ? null : Convert.ToHexString(keyIdentifier.Value.Span);
         }
         catch
         {
             return null;
         }
-
-        return null;
     }
 
     /// <summary>
