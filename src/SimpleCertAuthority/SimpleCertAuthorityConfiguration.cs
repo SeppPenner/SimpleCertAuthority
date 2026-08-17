@@ -45,6 +45,11 @@ public sealed class SimpleCertAuthorityConfiguration
     public string JsonWebTokenConfigurationKey { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the users allowed to log in.
+    /// </summary>
+    public List<SimpleCertAuthorityUser> Users { get; set; } = [];
+
+    /// <summary>
     /// Checks whether the configuration is valid or not.
     /// </summary>
     /// <returns>A value indicating whether the configuration is valid or not.</returns>
@@ -83,6 +88,24 @@ public sealed class SimpleCertAuthorityConfiguration
         if (this.JsonWebTokenConfigurationKey.Length < 32)
         {
             throw new Exception("The JSON WebToken configuration key is too short.");
+        }
+
+        if (this.Users.Count == 0)
+        {
+            throw new Exception("No user is configured.");
+        }
+
+        foreach (var user in this.Users)
+        {
+            if (string.IsNullOrWhiteSpace(user.UserName))
+            {
+                throw new Exception("A user name is empty.");
+            }
+
+            if (string.IsNullOrWhiteSpace(user.Password))
+            {
+                throw new Exception($"The password of the user {user.UserName} is empty.");
+            }
         }
 
         return true;

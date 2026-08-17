@@ -68,13 +68,36 @@ public sealed class LoginController : ControllerBase
             return this.BadRequest("The password is not set");
         }
 
-        if (dtoLogin.UserName == "manfred" && dtoLogin.Password == "beer")
+        if (this.IsKnownUser(dtoLogin))
         {
             var token = this.GenerateToken(dtoLogin.UserName);
             return this.Ok(token);
         }
 
         return this.Unauthorized();
+    }
+
+    /// <summary>
+    /// Checks whether the login data matches a configured user or not.
+    /// </summary>
+    /// <param name="dtoLogin">The DTO to login.</param>
+    /// <returns>A value indicating whether the login data matches a configured user or not.</returns>
+    private bool IsKnownUser(DtoLogin dtoLogin)
+    {
+        foreach (var user in this.simpleCertAuthorityConfiguration.Users)
+        {
+            if (!string.Equals(user.UserName, dtoLogin.UserName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Compare in constant time, so that the response time tells nothing about the password.
+            return CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(user.Password),
+                Encoding.UTF8.GetBytes(dtoLogin.Password));
+        }
+
+        return false;
     }
 
     /// <summary>
