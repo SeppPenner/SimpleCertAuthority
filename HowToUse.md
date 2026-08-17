@@ -1,86 +1,200 @@
 ## Basic usage
 
 ### JSON configuration (Adjust this to your needs)
+
+The name of the configuration section has to match the assembly name, so it stays
+`SimpleCertAuthority`.
+
 ```json
 {
     "AllowedHosts": "*",
-    "MqttBridge": {
-        "Port": 1883,
+    "SimpleCertAuthority": {
+        "RootCaPassword": "Mane",
+        "RootCaSubject": "CN=SimpleCertAuthorityRoot",
+        "SubCaPassword": "Mane",
+        "SubCaSubject": "CN=SimpleCertAuthoritySubCa",
+        "DelayInMilliSeconds": 30000,
+        "JsonWebTokenConfigurationKey": "jCREn#FfpP9Wv6cCZc#pQf+kuthDKW8WM/SEXn9U",
         "Users": [
             {
-                "UserName": "Hans",
-                "Password": "Test"
-            }
-        ],
-        "DelayInMilliSeconds": 30000,
-        "TlsPort": 8883,
-        "BridgeUrl": "mqtt.test.de",
-        "BridgePort": 8883,
-        "UseTls": true,
-        "BridgeUser": [
-            {
-                "UserName": "Hans",
-                "Password": "Test",
-                "ClientId": "Hans"
+                "UserName": "manfred",
+                "Password": "beer"
             }
         ]
     }
 }
 ```
 
-### Run this project in Docker from the command line (Examples for Powershell, but should work in other shells as well):
+| Setting | Meaning |
+| --- | --- |
+| `RootCaPassword` | Protects the `RootCertificates/root_ca_{n}.pfx` files. |
+| `RootCaSubject` | The subject of the root certificate. A leading `CN=` is optional. |
+| `SubCaPassword` | Protects the `SubCaCertificates/sub_ca_{n}.pfx` files. |
+| `SubCaSubject` | The subject of the sub CA certificate. A leading `CN=` is optional. |
+| `DelayInMilliSeconds` | The interval of the heartbeat log message. |
+| `JsonWebTokenConfigurationKey` | The signing key of the JSON web tokens, at least 32 characters. |
+| `Users` | The users allowed to log in. At least one is required. |
 
-1. Change the directory
+The values shipped in `appsettings.json` are meant for a local try out. **Change the passwords, the
+token key and the users before you run this anywhere else**, they are public in this repository.
+
+The service refuses to start when a setting is missing: an empty password, an empty subject, a token
+key shorter than 32 characters or an empty user list all abort the start with an explanatory
+exception.
+
+### Files created at runtime
+
+All four directories are created relative to the **working directory** of the process, so start the
+service with its working directory set to where the certification authority should live.
+
+| Directory | Content |
+| --- | --- |
+| `Keys` | The RSA key pair of the root certification authority. |
+| `RootCertificates` | `root_ca_{n}.pfx`, protected with `RootCaPassword`. |
+| `SubCaCertificates` | `sub_ca_{n}.pfx`, protected with `SubCaPassword`. |
+| `RevokedCertificates` | `revoked_certificates.json`, the revoked serial numbers. |
+
+None of this belongs in a repository, it contains the private keys of the certification authority.
+
+### Run the project from the command line (Examples for Powershell, but should work in other shells as well)
+
+1. Publish the project
+
     ```bash
-    cd ..\src\MqttBridge
+    dotnet publish src/SimpleCertAuthority/SimpleCertAuthority.csproj -c Release --output publish/
     ```
 
-2. Publish the project
-    ```bash
-    dotnet publish -c Release --output publish/
+2. Run it, with the working directory set to the published output
+
+    ```powershell
+    $env:ASPNETCORE_URLS = 'http://127.0.0.1:5080'
+    Start-Process -FilePath .\publish\SimpleCertAuthority.exe -WorkingDirectory .\publish
     ```
 
-3. Build the docker file:
-    * `dockerhubuser` is a placeholder for your docker hub username, if you want to build locally, just name the container `mqttbridge`
-    * `1.0.2` is an example version tag, use it as you like
-    * `-f Dockerfile .` (Mind the `.`) is used to specify the dockerfile to use
+    On the first start the log reports the three creation steps:
 
-    ```bash
-    docker build --tag dockerhubuser/mqttbridge:1.0.2 -f Dockerfile .
+    ```text
+    [WRN] RSA key pair not loaded, creating a new one
+    [WRN] No root certificate loaded, creating a new one
+    [WRN] No sub CA certificate loaded, creating a new one
     ```
 
-4. Push the project to docker hub (If you like)
-    * `dockerhubuser` is a placeholder for your docker hub username, if you want to build locally, just name the container `mqttbridge`
-    * `1.0.2` is an example version tag, use it as you like
+    On every later start these warnings must be gone. If they come back, the service did not find
+    its state and is about to build a second certification authority next to the first one.
 
-    ```bash
-    docker push dockerhubuser/mqttbridge:1.0.2
+### Install it as a service
+
+The same executable hosts itself as a Windows service and under systemd, no separate build is
+needed.
+
+1. Windows, from an elevated prompt. `binPath` has to be the published executable, and the service
+   runs with the directory of the executable as its working directory:
+
+    ```powershell
+    New-Service -Name SimpleCertAuthority -BinaryPathName "C:\SimpleCertAuthority\SimpleCertAuthority.exe" -StartupType Automatic
+    Start-Service -Name SimpleCertAuthority
     ```
 
-5. Run the container:
-    * `-d` runs the docker container detached (e.g. no logs shown on the console, is needed if run as service)
-    * `--name="mqttbridge"` gives the container a certain name
-    * `-p 1883:1883` opens the internal container port 1883 (Default MQTT without TLS) to the external port 1883
-    * `-p 8883:8883` opens the internal container port 8883 (Default MQTT with TLS) to the external port 8883
-    * `-v "/home/config.json:/app/appsettings.json"` sets the path to the external configuration file (In the example located under `/home/appsettings.json`) to the container internally
-    
-    ```bash
-    docker run -d --name="mqttbridge" -p 1883:1883 -p 8883:8883 -v "/home/appsettings.json:/app/appsettings.json" --restart=always dockerhubuser/mqttbridge:1.0.2
+2. Linux, as `/etc/systemd/system/simplecertauthority.service`:
+
+    ```ini
+    [Unit]
+    Description=SimpleCertAuthority
+
+    [Service]
+    Type=notify
+    WorkingDirectory=/opt/simplecertauthority
+    ExecStart=/opt/simplecertauthority/SimpleCertAuthority
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
     ```
 
-6. Check the status of all containers running (Must be root)
     ```bash
-    docker ps -a
+    systemctl daemon-reload
+    systemctl enable --now simplecertauthority
     ```
 
-7. Stop a container
-    * `containerid` is the id of the container obtained from the `docker ps -a` command
-    ```bash
-    docker stop containerid
+### Use the API
+
+The examples use `127.0.0.1:5080` and the sample user from above.
+
+1. Get a token. It is only needed for `createRootCertificate` and `createSubCaCertificate`.
+
+    ```powershell
+    $token = Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Login/login' -Method Post `
+        -ContentType 'application/json' -Body (@{ UserName = 'manfred'; Password = 'beer' } | ConvertTo-Json)
     ```
 
-8. Remove a container
-    * `containerid` is the id of the container obtained from the `docker ps -a` command
-    ```bash
-    docker rm containerid
+2. Download the root certificates, so that the CA can be trusted by a client.
+
+    ```powershell
+    Invoke-WebRequest -Uri 'http://127.0.0.1:5080/api/Certificate/getRootCertificates' -OutFile roots.zip
     ```
+
+3. Issue a certificate. The answer is a PKCS#12 file that contains the private key, protected with
+   `CertificatePassword`.
+
+    ```powershell
+    $body = @{
+        SubjectName = 'test.example.com'
+        ValidFrom = (Get-Date).ToString('o')
+        ValidTo = (Get-Date).AddYears(1).ToString('o')
+        SanDomains = @('test.example.com', 'www.test.example.com')
+        CertificatePassword = 'TestPassword'
+    } | ConvertTo-Json
+
+    Invoke-WebRequest -Uri 'http://127.0.0.1:5080/api/Certificate/generateCertificate' -Method Post `
+        -ContentType 'application/json' -Body $body -OutFile certificate.pfx
+    ```
+
+4. Verify a certificate. The body is the raw certificate as a base 64 string, either the plain
+   certificate or a PKCS#12 file without a password.
+
+    ```powershell
+    $cer = [Convert]::ToBase64String([IO.File]::ReadAllBytes('certificate.cer'))
+    Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/verifyCertificate' -Method Post `
+        -ContentType 'application/json' -Body (ConvertTo-Json $cer)
+    ```
+
+    A valid certificate answers `200` with `Certificate verified.`, an invalid one `409` with the
+    reason, for example `The certificate is revoked.`
+
+5. Renew a certificate. The successor keeps the subject and the extensions and gets a new key pair,
+   a new serial number and the new validity.
+
+    ```powershell
+    $body = @{
+        CertificateBytes = $cer
+        ValidFrom = (Get-Date).ToString('o')
+        ValidTo = (Get-Date).AddYears(2).ToString('o')
+        CertificatePassword = 'TestPassword'
+    } | ConvertTo-Json
+
+    Invoke-WebRequest -Uri 'http://127.0.0.1:5080/api/Certificate/renewCertificate' -Method Post `
+        -ContentType 'application/json' -Body $body -OutFile renewed.pfx
+    ```
+
+6. Revoke a certificate. Only the serial number is stored, so the certificate itself is enough.
+
+    ```powershell
+    Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/revokeCertificate' -Method Post `
+        -ContentType 'application/json' -Body (ConvertTo-Json $cer)
+    ```
+
+7. Create another root or sub CA certificate. This needs the token from step 1, and the newest
+   certificate by expiration date is the one used for signing afterwards.
+
+    ```powershell
+    Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/createSubCaCertificate' -Method Post `
+        -Headers @{ Authorization = "Bearer $token" }
+    ```
+
+### Known limits
+
+* Certificates issued before version 1.0.1.0 carry a malformed authority key identifier. The chain
+  lookup cannot find their sub CA, so they can neither be verified nor renewed. Issue them again.
+* Revocation is a plain list of serial numbers. There is no signed certificate revocation list and
+  no OCSP responder, clients have to ask the API.
+* Everything except creating a root or a sub CA certificate is open without authentication.
