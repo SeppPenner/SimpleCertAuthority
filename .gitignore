@@ -34,3 +34,8 @@ private-packages/
 InstallFiles.wxs
 node_modules/
 package-lock.json
+#Ignore the runtime state of the certificate authority, it holds the CA private keys
+Keys/
+RootCertificates/
+SubCaCertificates/
+RevokedCertificates/
