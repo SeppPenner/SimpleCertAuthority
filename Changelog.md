@@ -1,5 +1,6 @@
 # Change history
 
+* **Version 1.0.3.0 (2026-08-18)** : Every certificate gets its own key pair now, so the root certificates no longer share one and a second root certificate really rotates the key. The `Keys` directory with the unencrypted root key is gone, an existing one is ignored. Added a test project with 29 MSTest tests.
 * **Version 1.0.2.0 (2026-08-18)** : Issuing, verifying, renewing and revoking a certificate requires a token now, the certificate controller is authorized by default and only the root certificate, sub CA certificate and revoked serial number downloads stay anonymous.
 * **Version 1.0.1.0 (2026-08-17)** : Fixed the build, fixed the certificate handling (Root CA subject, sub CA and issued certificate private keys, authority key identifier, issuer of a renewed certificate, RSA key pair loading), issued certificates get their own key pair now, moved the login users to the configuration, updated NuGet packages, moved to Net 10.0, rewrote the readme and the how to use file.
 * **Version 1.0.0.0 (2024-09-30)** : 1.0 release.
