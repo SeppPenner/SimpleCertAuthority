@@ -7,25 +7,28 @@ keeps a root CA and a sub CA on disk and issues, verifies, renews and revokes ce
 REST API. It is an application, **not** a library and **not** a NuGet package: no
 `GeneratePackageOnBuild`, no push script, no installer.
 
-One solution `src/SimpleCertAuthority.sln` with exactly one project,
-`src/SimpleCertAuthority/SimpleCertAuthority.csproj`, SDK `Microsoft.NET.Sdk.Web`, `OutputType`
-`Exe`. It hosts itself as a Windows service (`UseWindowsService`) and under systemd (`UseSystemd`),
-so the same binary runs on both.
+One solution `src/SimpleCertAuthority.sln` with exactly two projects:
+
+- `src/SimpleCertAuthority/SimpleCertAuthority.csproj`, SDK `Microsoft.NET.Sdk.Web`, `OutputType`
+  `Exe`, the service itself. It hosts itself as a Windows service (`UseWindowsService`) and under
+  systemd (`UseSystemd`), so the same binary runs on both.
+- `src/SimpleCertAuthority.Tests/SimpleCertAuthority.Tests.csproj`, MSTest, added in version 1.0.3.0.
 
 Layout inside `src/SimpleCertAuthority`:
 
 - `Program.cs`: reads the configuration, sets up Serilog, builds the host. `Startup.cs`: JWT bearer
   authentication, MVC, the NSwag OpenAPI document and the registration of the background service.
 - `SimpleCertAuthorityService.cs`: a `BackgroundService`. Everything that matters happens in
-  `StartAsync`, which creates the four state directories, loads or creates the root CA key pair, the
-  root certificate and the sub CA certificate and loads the revoked serial numbers. `ExecuteAsync`
-  only logs a heartbeat with memory numbers.
+  `StartAsync`, which creates the three state directories, loads or creates the root certificate and
+  the sub CA certificate and loads the revoked serial numbers. `ExecuteAsync` only logs a heartbeat
+  with memory numbers.
 - `SimpleCertAuthorityConfiguration.cs` plus `SimpleCertAuthorityUser.cs`: the configuration read
   from `appsettings.json`, including the users allowed to log in. `IsValid` checks it.
 - `CertificateController.cs`: the API under `api/Certificate`, see the endpoint list below.
   `LoginController.cs`: `api/Login/login`, hands out a JSON web token valid for 120 minutes.
   `ControllerBaseExtensions.cs`: the single `InternalServerError` helper.
 - `Helpers/CertificateStore.cs`: the whole certificate logic, a `static` class with `static` state.
+  Its `internal Clear` exists for the tests only, the service never starts over.
   `Helpers/CertificateHelper.cs`: loads a certificate from raw bytes, dispatching on the content
   type. `Helpers/ChainResult.cs`: the result of the chain lookup. `Helpers/DirectoryHelper.cs`:
   creates a directory if it is missing.
@@ -34,6 +37,23 @@ Layout inside `src/SimpleCertAuthority`:
 - `Dtos/`: `DtoLogin`, `DtoCreateCertificate`, `DtoRenewCertificate`, all `sealed record`s with
   explicit `[JsonPropertyName]`.
 - `GlobalUsings.cs`: all usings of the project, including the alias `ILogger = Serilog.ILogger`.
+
+Layout inside `src/SimpleCertAuthority.Tests`:
+
+- `CertificateStoreTests.cs`: the certification authority end to end, one test per property that used
+  to be broken. Creating a root and a sub CA, loading them again, the subject without a doubled `CN=`,
+  the own key pair per certificate, random serial numbers, the authority key identifier pointing back
+  at the issuer, an issued certificate with a matching private key, the subject alternative names,
+  validation, revocation including the file on disk, renewal and an independent chain build.
+- `CertificateHelperTests.cs`: the content type dispatch, a plain certificate, a PKCS#12 file with and
+  without a password, a wrong password and data that is no certificate.
+- `SimpleCertAuthorityConfigurationTests.cs`: every rule of `IsValid`.
+- `CertificateAuthorityScope.cs`: gives a test an empty certification authority in a temporary
+  directory. It sets the working directory, because `DirectoryNames` are relative, and clears the
+  static state of `CertificateStore`. The working directory is process wide, so **the tests must not
+  run in parallel**, which is why nothing enables it.
+- `TestDataProvider.cs`: the passwords, the subjects and the helpers both certificate test classes use.
+- `GlobalUsings.cs`: all usings of the test project.
 
 The API:
 
@@ -52,12 +72,17 @@ The API:
 
 The state on disk, created relative to the **working directory**:
 
-- `Keys/rsa_private_key.pem` and `rsa_public_key.pem`: the key pair of the root CA.
 - `RootCertificates/root_ca_{n}.pfx`, protected with `RootCaPassword`.
 - `SubCaCertificates/sub_ca_{n}.pfx`, protected with `SubCaPassword`.
 - `RevokedCertificates/revoked_certificates.json`, a JSON array of serial numbers.
 
-None of this belongs in git, `.gitignore` covers all four directory names.
+Every certificate keeps its own private key inside its own PKCS#12 file, there is no key file next to
+it. Versions up to 1.0.2.0 also wrote a `Keys` directory holding the key pair of the root CA. That
+directory is not read and not created any more, a leftover from an earlier version is simply ignored
+and can be deleted.
+
+None of this belongs in git, `.gitignore` covers all four directory names, `Keys` included, so that
+an old key cannot be committed by accident.
 
 Repository root: `README.md`, `HowToUse.md` (the usage documentation), `Changelog.md`,
 `License.txt` (MIT), `.gitignore` and `.gitattributes`. There is no `Updating.md`, no `.github`
@@ -67,6 +92,10 @@ folder, no test project and no screenshots.
 
 ```powershell
 dotnet build src/SimpleCertAuthority.sln -c Release
+```
+
+```powershell
+dotnet test src/SimpleCertAuthority.sln -c Release
 ```
 
 - Single target framework `net10.0`, no multi-targeting, no `RuntimeIdentifiers`. Nothing in the
@@ -86,8 +115,18 @@ dotnet build src/SimpleCertAuthority.sln -c Release
   `dotnet build src/SimpleCertAuthority.sln --source https://api.nuget.org/v3/index.json`.
   Mind that `dotnet list package --outdated` ignores `--source` for the audit, so it keeps failing;
   query the versions over `https://api.nuget.org/v3-flatcontainer/<id>/index.json` instead.
-- There are **no tests**. A behaviour change is verified by publishing the project, starting it in
-  an empty directory and calling the API:
+- Tests are MSTest in the single test project `src/SimpleCertAuthority.Tests`, with the package set of
+  the sibling repositories: `Microsoft.NET.Test.Sdk`, `MSTest.TestAdapter`, `MSTest.TestFramework`,
+  `coverlet.collector` and `GitVersion.MsBuild`. `dotnet test` runs 29 tests in around 25 seconds. They
+  need no network and no fixture outside the repository. The time goes into RSA key generation, roughly
+  half a second per 4096 bit key, and that is why `KeySize` stays as it is instead of being made
+  configurable for the tests. Every test works in its own directory below `Path.GetTempPath()` and
+  deletes it afterwards, so a test run leaves the working tree untouched. `dotnet test` does not accept
+  `--source`, so build first and then run it with `--no-build --no-restore` when a private feed gets in
+  the way. Never claim a test run happened without running it.
+- The tests cover the certificate logic and the configuration. They do not start the web host, so
+  authentication, routing and the OpenAPI document are not covered. For a change in that area, publish
+  the project and call the API:
 
 ```powershell
 dotnet publish src/SimpleCertAuthority/SimpleCertAuthority.csproj -c Release -o <somewhere>
@@ -97,7 +136,6 @@ dotnet publish src/SimpleCertAuthority/SimpleCertAuthority.csproj -c Release -o 
   directories end up somewhere else. `ASPNETCORE_URLS` picks the port. Judge a run by the created
   files and by the API responses, and check that a **second** start logs no
   "not loaded, creating a new one" warning, which is the regression test for the loading path.
-  Never claim a run happened without running it.
 
 ## Code conventions
 
@@ -136,15 +174,12 @@ Do not silently "clean up" these, they are existing behaviour:
 - **`IsValid` throws instead of returning false.** It returns `true` or throws, so the
   `if (!this.SimpleCertAuthorityConfiguration.IsValid())` in `StartAsync` can never be taken. The
   exception is the mechanism, the return value is decoration.
-- **The key files are DER, not PEM.** `Keys/rsa_private_key.pem` and `rsa_public_key.pem` hold
-  PKCS#1 DER bytes written by `ExportRSAPrivateKey` and `ExportRSAPublicKey`, the extension lies.
-  The public key file is written for inspection only and never imported: importing it into the same
-  `RSA` instance after the private key would **replace** the key material and leave a key pair
-  without a private key behind. That was the bug of the versions up to 1.0.0.0.
-- **All root certificates share one key pair.** `CreateAndSaveRootCertificate` signs with the key
-  pair from `Keys/`, so calling `createRootCertificate` twice produces two certificates over the
-  same key. Sub CA certificates and issued certificates each get their own fresh key pair, which is
-  what keeps the CA key inside the service.
+- **Every certificate gets its own key pair.** Root, sub CA and issued certificates each generate one
+  in `CreateAndSave...` respectively `CreateCertificate`, and it travels inside the PKCS#12 file. Do
+  not reintroduce a shared key: up to 1.0.2.0 all root certificates signed with the same key pair
+  from a `Keys` directory, which gave them the same subject key identifier, so `createRootCertificate`
+  rotated nothing and the chain lookup could not tell two roots apart. Certificates written by those
+  versions still load and still work, only their shared key stays shared.
 - **The state directory depends on the working directory.** `DirectoryNames` are relative, while the
   web host uses the assembly location as content root. Starting the service from a different working
   directory creates a second, empty certification authority instead of finding the existing one.
@@ -204,8 +239,9 @@ release ends with the push.
   forgotten file, not even when the commit is still local. Write a follow-up commit instead. The
   release versions come from tags on exact commits, an amended commit leaves its tag pointing at a
   commit that no longer exists in the branch.
-- **Never `git add -A` in this repository.** The working tree can hold a real CA private key under
-  `Keys/`. That directory is ignored now, but add files by name anyway.
+- **Never `git add -A` in this repository.** The working tree can hold a real certification authority
+  under `RootCertificates/`, `SubCaCertificates/` and, from an older version, `Keys/`. All of them are
+  ignored, but add files by name anyway.
 
 ## Writing style
 
