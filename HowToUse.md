@@ -49,12 +49,16 @@ service with its working directory set to where the certification authority shou
 
 | Directory | Content |
 | --- | --- |
-| `Keys` | The RSA key pair of the root certification authority. |
 | `RootCertificates` | `root_ca_{n}.pfx`, protected with `RootCaPassword`. |
 | `SubCaCertificates` | `sub_ca_{n}.pfx`, protected with `SubCaPassword`. |
 | `RevokedCertificates` | `revoked_certificates.json`, the revoked serial numbers. |
 
 None of this belongs in a repository, it contains the private keys of the certification authority.
+
+Versions up to 1.0.2.0 also wrote a `Keys` directory with the key pair of the root certification
+authority, unencrypted. It is neither read nor created any more. An existing one keeps lying around
+without any effect and can be deleted, and your existing `root_ca_{n}.pfx` and `sub_ca_{n}.pfx` keep
+working unchanged.
 
 ### Run the project from the command line (Examples for Powershell, but should work in other shells as well)
 
@@ -202,6 +206,9 @@ The examples use `127.0.0.1:5080` and the sample user from above.
   lookup cannot find their sub CA, so they can neither be verified nor renewed. Issue them again.
 * Revocation is a plain list of serial numbers. There is no signed certificate revocation list and
   no OCSP responder, clients have to ask the API.
+* Root certificates written by version 1.0.2.0 or earlier share one key pair, because that version
+  signed all of them with the key from the `Keys` directory. They keep working, but a rotation only
+  starts with a root certificate created by 1.0.3.0 or later.
 * The three read endpoints, the root certificates, the sub CA certificates and the revoked serial
   numbers, are open without a token, because a client needs the trust anchor and the revocation list
   before it can log in. They contain public material only. Everything else answers `401` without a

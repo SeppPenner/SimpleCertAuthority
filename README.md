@@ -17,14 +17,14 @@ service or under systemd.
 
 On the first start the service creates its own certificate hierarchy:
 
-1. An RSA key pair for the root certification authority, stored under `Keys`.
-2. A self signed root certificate valid for five years, stored under `RootCertificates`.
-3. A sub CA certificate valid for three years, signed by the root certificate and stored under
+1. A self signed root certificate valid for five years, stored under `RootCertificates`.
+2. A sub CA certificate valid for three years, signed by the root certificate and stored under
    `SubCaCertificates`.
 
-Certificates are issued by the sub CA. Every issued certificate and every sub CA certificate gets
-its own key pair, so the key of a certification authority is never handed out. The API delivers an
-issued certificate as a PKCS#12 file including its private key.
+Certificates are issued by the sub CA. Every certificate gets its own key pair, which stays inside its
+own PKCS#12 file, so the key of a certification authority is never handed out and a second root
+certificate really rotates the key. The API delivers an issued certificate as a PKCS#12 file including
+its private key.
 
 Revocation is kept simple: the serial number of a revoked certificate is appended to a JSON list
 under `RevokedCertificates` and served over the API. There is no certificate revocation list and no

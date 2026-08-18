@@ -104,17 +104,6 @@ public class SimpleCertAuthorityService : BackgroundService
         DirectoryHelper.CreateDirectory(DirectoryNames.RootCertificates);
         DirectoryHelper.CreateDirectory(DirectoryNames.SubCaCertificates);
         DirectoryHelper.CreateDirectory(DirectoryNames.RevokedCertificates);
-        DirectoryHelper.CreateDirectory(DirectoryNames.Keys);
-
-        // Load the RSA key pair.
-        var rsaKeyPairLoaded = await CertificateStore.LoadRsaKeyPair();
-
-        // Create the RSA key pair if it was not loaded.
-        if (!rsaKeyPairLoaded)
-        {
-            this.logger.Warning("RSA key pair not loaded, creating a new one");
-            await CertificateStore.CreateAndSaveRsaKeyPair();
-        }
 
         // Load the root certificates.
         var numberOfRootCertificates = await CertificateStore.LoadRootCertificates(this.SimpleCertAuthorityConfiguration.RootCaPassword);

@@ -15,15 +15,6 @@ namespace SimpleCertAuthority.Helpers;
 public static class CertificateStore
 {
     /// <summary>
-    /// The RSA key pair of the root certification authority (CA).
-    /// </summary>
-    /// <remarks>
-    /// This key pair signs the root certificates only. Sub CA certificates and issued certificates get
-    /// their own key pair, so that the root key never leaves the service.
-    /// </remarks>
-    private static RSA? RsaKeyPair;
-
-    /// <summary>
     /// The root certificates.
     /// </summary>
     private static readonly List<X509Certificate2> RootCertificates = [];
@@ -60,85 +51,22 @@ public static class CertificateStore
         X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet;
 
     /// <summary>
-    /// Creates and saves the RSA key pair.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">Thrown if the RSA key was already generated.</exception>
-    public static async Task CreateAndSaveRsaKeyPair()
-    {
-        // Jump out if the key pair was already created before.
-        if (RsaKeyPair is not null)
-        {
-            throw new InvalidOperationException("RSA key was already generated.");
-        }
-
-        // Create a new RSA key pair.
-        var rsa = RSA.Create(KeySize);
-
-        // Save the private key as a PKCS#1 structure. Mind that these are DER bytes, not PEM text,
-        // although the file name says so.
-        var privateKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PrivateKeyFileName);
-        var privateKey = rsa.ExportRSAPrivateKey();
-        await File.WriteAllBytesAsync(privateKeyFilePath, privateKey);
-
-        // Save the public key as a PKCS#1 structure. It is written for inspection only, the private key
-        // file already contains the public parameters.
-        var publicKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PublicKeyFileName);
-        var publicKey = rsa.ExportRSAPublicKey();
-        await File.WriteAllBytesAsync(publicKeyFilePath, publicKey);
-
-        // Save the RSA key pair.
-        RsaKeyPair = rsa;
-    }
-
-    /// <summary>
-    /// Loads the RSA key pair.
-    /// </summary>
-    public static async Task<bool> LoadRsaKeyPair()
-    {
-        var privateKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PrivateKeyFileName);
-        var publicKeyFilePath = Path.Combine(DirectoryNames.Keys, NameConstants.PublicKeyFileName);
-
-        // Check the key file paths.
-        if (!File.Exists(privateKeyFilePath) || !File.Exists(publicKeyFilePath))
-        {
-            return false;
-        }
-
-        // Create a new RSA key pair.
-        var rsa = RSA.Create(KeySize);
-
-        // Load the RSA private key. The public key file must not be imported afterwards:
-        // ImportRSAPublicKey replaces the key material of the instance, which would leave a key pair
-        // without a private key behind and break every signing operation. The private key already
-        // contains the public parameters.
-        var privateKey = await File.ReadAllBytesAsync(privateKeyFilePath);
-        rsa.ImportRSAPrivateKey(privateKey, out _);
-
-        // Save the RSA key pair.
-        RsaKeyPair = rsa;
-
-        // The key pair was loaded successfully.
-        return true;
-    }
-
-    /// <summary>
     /// Creates and saves a root certificate.
     /// </summary>
     /// <param name="rootCaPassword">The root CA password.</param>
     /// <param name="subjectName">The subject name.</param>
-    /// <exception cref="InvalidOperationException">Thrown if the RSA key was not yet generated.</exception>
     public static async Task CreateAndSaveRootCertificate(string rootCaPassword, string subjectName)
     {
-        // Jump out if the key pair was not yet created.
-        if (RsaKeyPair is null)
-        {
-            throw new InvalidOperationException("RSA key was not yet generated. Please generate it first.");
-        }
+        // Create an own key pair for the root certificate. It is stored in the PKCS#12 file next to the
+        // certificate, so that a second root certificate really rotates the key. A shared key pair would
+        // give both certificates the same subject key identifier and the chain lookup could not tell
+        // them apart.
+        using var keyPair = RSA.Create(KeySize);
 
         // Create a certificate request for the root certificate.
         var request = new CertificateRequest(
             $"CN={GetCommonName(subjectName)}",
-            RsaKeyPair,
+            keyPair,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
 
@@ -153,19 +81,20 @@ public static class CertificateStore
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
         // Create a self-signed root certificate (e.g. valid for 5 years). The certificate carries the
-        // private key of the RSA key pair, so it can be exported and used for signing right away.
-        var rootCert = request.CreateSelfSigned(
+        // private key of the key pair, so it can be exported including the key.
+        using var rootCert = request.CreateSelfSigned(
             DateTimeOffset.Now,
             DateTimeOffset.Now.AddYears(5));
 
-        // Export certificate to PFX format.
+        // Export certificate to PFX format, the private key goes with it.
         var certBytes = rootCert.Export(X509ContentType.Pfx, rootCaPassword);
         var certificateName = string.Format(NameConstants.RootCertificateFileName, RootCertificates.Count + 1);
         var rootCertificatePath = Path.Combine(DirectoryNames.RootCertificates, certificateName);
         await File.WriteAllBytesAsync(rootCertificatePath, certBytes);
 
-        // Save root CA certificate.
-        RootCertificates.Add(rootCert);
+        // Save root CA certificate. The exported bytes are loaded again, so that the stored certificate
+        // does not depend on the key pair and the certificate disposed at the end of this method.
+        RootCertificates.Add(X509CertificateLoader.LoadPkcs12(certBytes, rootCaPassword, KeyStorageFlags));
     }
 
     /// <summary>
@@ -620,6 +549,31 @@ public static class CertificateStore
 
         // Save the revoked certificates.
         await SaveRevokedCertificates();
+    }
+
+    /// <summary>
+    /// Clears the loaded certificates and revoked serial numbers.
+    /// </summary>
+    /// <remarks>
+    /// The store keeps its state in static collections for the lifetime of the process, and the service
+    /// fills them exactly once while it starts. Only the tests have to start over, which is why this is
+    /// internal and not part of the API.
+    /// </remarks>
+    internal static void Clear()
+    {
+        foreach (var certificate in RootCertificates)
+        {
+            certificate.Dispose();
+        }
+
+        foreach (var certificate in SubCaCertificates)
+        {
+            certificate.Dispose();
+        }
+
+        RootCertificates.Clear();
+        SubCaCertificates.Clear();
+        RevokedCertificates.Clear();
     }
 
     /// <summary>

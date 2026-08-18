@@ -28,9 +28,4 @@ public static class DirectoryNames
     /// The revoked certificates directory.
     /// </summary>
     public const string RevokedCertificates = "RevokedCertificates";
-
-    /// <summary>
-    /// The keys directory.
-    /// </summary>
-    public const string Keys = "Keys";
 }

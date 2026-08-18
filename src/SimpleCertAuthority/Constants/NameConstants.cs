@@ -15,16 +15,6 @@ namespace SimpleCertAuthority.Constants;
 public static class NameConstants
 {
     /// <summary>
-    /// The file name of the RSA private key.
-    /// </summary>
-    public const string PrivateKeyFileName = "rsa_private_key.pem";
-
-    /// <summary>
-    /// The file name of the RSA public key.
-    /// </summary>
-    public const string PublicKeyFileName = "rsa_public_key.pem";
-
-    /// <summary>
     /// The file name of the root certificate.
     /// </summary>
     public const string RootCertificateFileName = "root_ca_{0}.pfx";
