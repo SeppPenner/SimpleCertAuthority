@@ -15,6 +15,7 @@ namespace SimpleCertAuthority;
 [Route("api/[controller]")]
 [ApiController]
 [OpenApiTag("Certificate", Description = "Certificate management.")]
+[Authorize]
 public sealed class CertificateController : ControllerBase
 {
     /// <summary>
@@ -125,11 +126,12 @@ public sealed class CertificateController : ControllerBase
     /// Creates a new root certificate.
     /// </remarks>
     /// <response code="201">Root certificate created.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(string), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("createRootCertificate")]
-    [Authorize]
     public async Task<ActionResult> CreateRootCertificate()
     {
         try
@@ -155,11 +157,12 @@ public sealed class CertificateController : ControllerBase
     /// Creates a new sub CA certificate.
     /// </remarks>
     /// <response code="201">Sub CA certificate created.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(string), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("createSubCaCertificate")]
-    [Authorize]
     public async Task<ActionResult> CreateSubCaCertificate()
     {
         try
@@ -186,11 +189,12 @@ public sealed class CertificateController : ControllerBase
     /// Generates a new certificate.
     /// </remarks>
     /// <response code="200">New certificate generated.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(X509Certificate2), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("generateCertificate")]
-    [AllowAnonymous]
     public ActionResult<X509Certificate2> GenerateCertificate([FromBody] DtoCreateCertificate dtoCreateCertificate)
     {
         try
@@ -223,11 +227,12 @@ public sealed class CertificateController : ControllerBase
     /// Revokes a certificate.
     /// </remarks>
     /// <response code="200">Certificate revoked.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("revokeCertificate")]
-    [AllowAnonymous]
     public async Task<ActionResult<string>> RevokeCertificate([FromBody] byte[] certificateBytes)
     {
         try
@@ -253,13 +258,14 @@ public sealed class CertificateController : ControllerBase
     /// Verifies a certificate.
     /// </remarks>
     /// <response code="200">Certificate verified or not.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="409">Error while validating certificate.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("verifyCertificate")]
-    [AllowAnonymous]
     public ActionResult<string> VerifyCertificate([FromBody] byte[] certificateBytes)
     {
         try
@@ -291,11 +297,12 @@ public sealed class CertificateController : ControllerBase
     /// Renews a given certificate.
     /// </remarks>
     /// <response code="200">New certificate generated.</response>
+    /// <response code="401">Unauthorized.</response>
     /// <response code="500">Internal server error.</response>
     [ProducesResponseType(typeof(X509Certificate2), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(string), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(string), StatusCodes.Status500InternalServerError)]
     [HttpPost("renewCertificate")]
-    [AllowAnonymous]
     public ActionResult<X509Certificate2> RenewCertificate([FromBody] DtoRenewCertificate dtoRenewCertificate)
     {
         try

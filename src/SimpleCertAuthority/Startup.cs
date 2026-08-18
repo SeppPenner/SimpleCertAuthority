@@ -95,7 +95,13 @@ public sealed class Startup
                     };
                 };
 
-                config.OperationProcessors.Add(new OperationSecurityScopeProcessor("auth"));
+                // The AspNetCore variant respects [Authorize] and [AllowAnonymous], so the document marks only
+
+
+                // the endpoints that really need a token.
+
+
+                config.OperationProcessors.Add(new AspNetCoreOperationSecurityScopeProcessor("auth"));
                 config.DocumentProcessors.Add(new SecurityDefinitionAppender("auth", new OpenApiSecurityScheme
                 {
                     Type = OpenApiSecuritySchemeType.Http,

@@ -120,7 +120,8 @@ needed.
 
 The examples use `127.0.0.1:5080` and the sample user from above.
 
-1. Get a token. It is only needed for `createRootCertificate` and `createSubCaCertificate`.
+1. Get a token. Everything below except step 2 needs it, the token is valid for 120 minutes and goes
+   into an `Authorization: Bearer` header.
 
     ```powershell
     $token = Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Login/login' -Method Post `
@@ -146,6 +147,7 @@ The examples use `127.0.0.1:5080` and the sample user from above.
     } | ConvertTo-Json
 
     Invoke-WebRequest -Uri 'http://127.0.0.1:5080/api/Certificate/generateCertificate' -Method Post `
+        -Headers @{ Authorization = "Bearer $token" } `
         -ContentType 'application/json' -Body $body -OutFile certificate.pfx
     ```
 
@@ -155,6 +157,7 @@ The examples use `127.0.0.1:5080` and the sample user from above.
     ```powershell
     $cer = [Convert]::ToBase64String([IO.File]::ReadAllBytes('certificate.cer'))
     Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/verifyCertificate' -Method Post `
+        -Headers @{ Authorization = "Bearer $token" } `
         -ContentType 'application/json' -Body (ConvertTo-Json $cer)
     ```
 
@@ -173,6 +176,7 @@ The examples use `127.0.0.1:5080` and the sample user from above.
     } | ConvertTo-Json
 
     Invoke-WebRequest -Uri 'http://127.0.0.1:5080/api/Certificate/renewCertificate' -Method Post `
+        -Headers @{ Authorization = "Bearer $token" } `
         -ContentType 'application/json' -Body $body -OutFile renewed.pfx
     ```
 
@@ -180,11 +184,12 @@ The examples use `127.0.0.1:5080` and the sample user from above.
 
     ```powershell
     Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/revokeCertificate' -Method Post `
+        -Headers @{ Authorization = "Bearer $token" } `
         -ContentType 'application/json' -Body (ConvertTo-Json $cer)
     ```
 
-7. Create another root or sub CA certificate. This needs the token from step 1, and the newest
-   certificate by expiration date is the one used for signing afterwards.
+7. Create another root or sub CA certificate. The newest certificate by expiration date is the one
+   used for signing afterwards.
 
     ```powershell
     Invoke-RestMethod -Uri 'http://127.0.0.1:5080/api/Certificate/createSubCaCertificate' -Method Post `
@@ -197,4 +202,7 @@ The examples use `127.0.0.1:5080` and the sample user from above.
   lookup cannot find their sub CA, so they can neither be verified nor renewed. Issue them again.
 * Revocation is a plain list of serial numbers. There is no signed certificate revocation list and
   no OCSP responder, clients have to ask the API.
-* Everything except creating a root or a sub CA certificate is open without authentication.
+* The three read endpoints, the root certificates, the sub CA certificates and the revoked serial
+  numbers, are open without a token, because a client needs the trust anchor and the revocation list
+  before it can log in. They contain public material only. Everything else answers `401` without a
+  valid token.

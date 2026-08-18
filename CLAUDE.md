@@ -45,10 +45,10 @@ The API:
 | GET | `api/Certificate/getRevokedCertificateSerialNumbers` | anonymous | The revoked serial numbers as JSON. |
 | POST | `api/Certificate/createRootCertificate` | **token** | Creates another root certificate. |
 | POST | `api/Certificate/createSubCaCertificate` | **token** | Creates another sub CA certificate. |
-| POST | `api/Certificate/generateCertificate` | anonymous | Issues a certificate, returns a PKCS#12 file. |
-| POST | `api/Certificate/renewCertificate` | anonymous | Issues a successor certificate, returns a PKCS#12 file. |
-| POST | `api/Certificate/verifyCertificate` | anonymous | 200 when valid, 409 with the reason when not. |
-| POST | `api/Certificate/revokeCertificate` | anonymous | Stores the serial number as revoked. |
+| POST | `api/Certificate/generateCertificate` | **token** | Issues a certificate, returns a PKCS#12 file. |
+| POST | `api/Certificate/renewCertificate` | **token** | Issues a successor certificate, returns a PKCS#12 file. |
+| POST | `api/Certificate/verifyCertificate` | **token** | 200 when valid, 409 with the reason when not. |
+| POST | `api/Certificate/revokeCertificate` | **token** | Stores the serial number as revoked. |
 
 The state on disk, created relative to the **working directory**:
 
@@ -151,10 +151,14 @@ Do not silently "clean up" these, they are existing behaviour:
 - **`CertificateStore` is static and never resets.** The loaded certificates live in static lists for
   the lifetime of the process, and the loading methods append instead of replacing. They are called
   once from `StartAsync`, calling them again would duplicate entries.
-- **Issuing certificates needs no token.** Only `createRootCertificate` and `createSubCaCertificate`
-  are `[Authorize]`. `generateCertificate`, `renewCertificate`, `verifyCertificate` and
-  `revokeCertificate` are `[AllowAnonymous]`, so anybody who reaches the port gets a signed
-  certificate.
+- **The certificate controller is protected by default.** `CertificateController` carries
+  `[Authorize]` on the class, and only `getRootCertificates`, `getSubCaCertificates` and
+  `getRevokedCertificateSerialNumbers` opt out with `[AllowAnonymous]`, because a client needs them
+  before it can trust or even reach the login. A new endpoint is therefore protected unless it says
+  otherwise, which is the way round that fails safe. Keep it that way, and use the
+  `AspNetCoreOperationSecurityScopeProcessor` in `Startup`, not `OperationSecurityScopeProcessor`:
+  only the AspNetCore variant reads the attributes, the other one marks every operation in the
+  OpenAPI document as secured, including the anonymous ones.
 - **Revocation is a list of serial numbers, not a CRL.** `revokeCertificate` stores
   `certificate.SerialNumber` in a JSON array, `getRevokedCertificateSerialNumbers` serves it, and
   `ValidateCertificate` checks it before it builds the chain. Nothing signs that list, and

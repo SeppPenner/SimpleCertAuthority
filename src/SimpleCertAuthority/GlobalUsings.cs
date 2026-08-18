@@ -18,6 +18,7 @@ global using Microsoft.IdentityModel.Tokens;
 
 global using NSwag;
 global using NSwag.Annotations;
+global using NSwag.Generation.AspNetCore.Processors;
 global using NSwag.Generation.Processors.Security;
 
 global using Serilog;

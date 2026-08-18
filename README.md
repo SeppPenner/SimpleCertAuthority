@@ -42,14 +42,15 @@ An OpenAPI document and a Swagger UI are served at `/swagger`.
 | GET | `api/Certificate/getRevokedCertificateSerialNumbers` | anonymous | The revoked serial numbers as JSON. |
 | POST | `api/Certificate/createRootCertificate` | token | Creates another root certificate. |
 | POST | `api/Certificate/createSubCaCertificate` | token | Creates another sub CA certificate. |
-| POST | `api/Certificate/generateCertificate` | anonymous | Issues a certificate, returns a PKCS#12 file. |
-| POST | `api/Certificate/renewCertificate` | anonymous | Issues a successor certificate, returns a PKCS#12 file. |
-| POST | `api/Certificate/verifyCertificate` | anonymous | `200` when the certificate is valid, `409` with the reason when it is not. |
-| POST | `api/Certificate/revokeCertificate` | anonymous | Stores the serial number of the certificate as revoked. |
+| POST | `api/Certificate/generateCertificate` | token | Issues a certificate, returns a PKCS#12 file. |
+| POST | `api/Certificate/renewCertificate` | token | Issues a successor certificate, returns a PKCS#12 file. |
+| POST | `api/Certificate/verifyCertificate` | token | `200` when the certificate is valid, `409` with the reason when it is not. |
+| POST | `api/Certificate/revokeCertificate` | token | Stores the serial number of the certificate as revoked. |
 
-Mind that only creating a root or a sub CA certificate requires a token. Everything else, issuing
-certificates included, is open to anybody who can reach the port. Put the service behind something
-that controls access, or restrict it to a trusted network.
+Everything that issues, changes or inspects a certificate needs a token. Open without one are the
+login itself and the three downloads a client needs before it can log in: the root certificates, the
+sub CA certificates and the revoked serial numbers. Those three are public trust material anyway,
+every certificate carries the chain and a revocation list is meant to be readable.
 
 ## Basic usage
 
